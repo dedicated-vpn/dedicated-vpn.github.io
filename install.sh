@@ -14,12 +14,26 @@ WATCH_SERVICE="/etc/systemd/system/sbserver-watch.service"
 DEFAULT_PORT="11584"
 DEFAULT_SNI="www.cloudflare.com"
 
+show_ad_notice() {
+  cat <<'AD'
+****************************************************************************************************************
+搬瓦工：梯子专用机，CN2 GIA线路，高性能，低延迟，99.99%高可用，跨境电商、外贸首选VPS
+https://bwh.awesome-vps.com
+
+丽萨主机：双ISP美国、新加坡、台湾原生住宅IP，tiktok运营，ChatGPT/Facebook/YouTube/Twitter/Netflix 等，流媒体全解锁，全新IP段，纯净IP，三网大陆优化线路（CN2 GIA/9929/4827）
+https://lisahost.awesome-vps.com
+****************************************************************************************************************
+AD
+}
+
+
 banner() {
   clear || true
+  show_ad_notice
+  echo
   cat <<'BANNER'
 ============================================================
  sing-box VLESS Reality 一键安装脚本
- 作者项目：marvellouswin/vps
 
  功能：
  - Linux VPS 服务端安装/管理
