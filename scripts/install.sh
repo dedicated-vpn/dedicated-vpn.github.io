@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "\n错误：脚本在第 ${LINENO} 行失败。失败命令：${BASH_COMMAND}" >&2' ERR
 
 APP_DIR="/root/sbox"
 BIN="$APP_DIR/sing-box"
