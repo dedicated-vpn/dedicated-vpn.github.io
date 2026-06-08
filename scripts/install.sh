@@ -5,6 +5,9 @@ APP_DIR="/root/sbox"
 BIN="$APP_DIR/sing-box"
 CONFIG="$APP_DIR/sbconfig_server.json"
 CLIENT_ENV="$APP_DIR/client.env"
+CLIENT_JSON_TUN="$APP_DIR/sbconfig_client_tun.json"
+CLIENT_JSON_PROXY="$APP_DIR/sbconfig_client_proxy.json"
+CLIENT_CLASH_META="$APP_DIR/clash-meta-client.yaml"
 LOG_FILE="$APP_DIR/nohup.out"
 SERVICE="sing-box-server"
 SYSTEMD_FILE="/etc/systemd/system/${SERVICE}.service"
@@ -34,11 +37,10 @@ banner() {
   cat <<'BANNER'
 ============================================================
  sing-box VLESS Reality 一键安装脚本
-
  功能：
  - Linux VPS 服务端安装/管理
  - VLESS + Reality
- - 自动生成客户端链接和二维码
+ - 自动生成客户端链接、二维码、sing-box JSON、Clash Meta 配置
  - systemd 开机自启
  - watchdog 异常自动重启
 
@@ -171,6 +173,296 @@ PUBLIC_KEY=${PUBLIC_KEY}
 SHORT_ID=${SHORT_ID}
 VLESS_URL=${VLESS_URL}
 EOF2
+  if [[ "$SERVER_ADDR" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    SERVER_BYPASS_RULE='{"ip_cidr":["'"$SERVER_ADDR"'/32"],"outbound":"direct"},'
+  elif [[ "$SERVER_ADDR" == *:* ]]; then
+    SERVER_BYPASS_RULE='{"ip_cidr":["'"$SERVER_ADDR"'/128"],"outbound":"direct"},'
+  else
+    SERVER_BYPASS_RULE='{"domain":["'"$SERVER_ADDR"'"],"outbound":"direct"},'
+  fi
+
+  if [[ "$SERVER_ADDR" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    SERVER_BYPASS_CLASH_RULE="- IP-CIDR,${SERVER_ADDR}/32,DIRECT,no-resolve"
+  elif [[ "$SERVER_ADDR" == *:* ]]; then
+    SERVER_BYPASS_CLASH_RULE="- IP-CIDR6,${SERVER_ADDR}/128,DIRECT,no-resolve"
+  else
+    SERVER_BYPASS_CLASH_RULE="- DOMAIN,${SERVER_ADDR},DIRECT"
+  fi
+
+  cat > "$CLIENT_JSON_TUN" <<EOF2
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "https",
+        "tag": "ali-dns",
+        "server": "223.5.5.5",
+        "server_port": 443,
+        "path": "/dns-query",
+        "tls": {
+          "enabled": true,
+          "server_name": "dns.alidns.com"
+        }
+      },
+      {
+        "type": "https",
+        "tag": "remote-dns",
+        "server": "1.1.1.1",
+        "server_port": 443,
+        "path": "/dns-query",
+        "tls": {
+          "enabled": true,
+          "server_name": "cloudflare-dns.com"
+        },
+        "detour": "proxy"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": ["geosite-cn"],
+        "server": "ali-dns"
+      },
+      {
+        "rule_set": ["geosite-geolocation-!cn"],
+        "server": "remote-dns"
+      }
+    ],
+    "final": "remote-dns"
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "interface_name": "",
+      "address": [
+        "172.19.0.1/30",
+        "fdfe:dcba:9876::1/126"
+      ],
+      "mtu": 1380,
+      "auto_route": true,
+      "strict_route": false,
+      "stack": "system",
+      "route_address": [
+        "0.0.0.0/1",
+        "128.0.0.0/1",
+        "100::/8",
+        "200::/7",
+        "400::/6",
+        "800::/5",
+        "1000::/4",
+        "2000::/3",
+        "4000::/2",
+        "8000::/1"
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "proxy",
+      "server": "$SERVER_ADDR",
+      "server_port": $PORT,
+      "uuid": "$UUID",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "$SNI",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "$PUBLIC_KEY",
+          "short_id": "$SHORT_ID"
+        }
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "rules": [
+      $SERVER_BYPASS_RULE
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "rule_set": ["geosite-cn", "geoip-cn"],
+        "outbound": "direct"
+      }
+    ],
+    "rule_set": [
+      {
+        "type": "remote",
+        "tag": "geosite-cn",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+        "download_detour": "proxy"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-geolocation-!cn",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs",
+        "download_detour": "proxy"
+      },
+      {
+        "type": "remote",
+        "tag": "geoip-cn",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+        "download_detour": "proxy"
+      }
+    ],
+    "final": "proxy",
+    "default_domain_resolver": {
+      "server": "remote-dns"
+    }
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "cache.db"
+    }
+  }
+}
+EOF2
+
+  cat > "$CLIENT_JSON_PROXY" <<EOF2
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 7890
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "proxy",
+      "server": "$SERVER_ADDR",
+      "server_port": $PORT,
+      "uuid": "$UUID",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "$SNI",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "$PUBLIC_KEY",
+          "short_id": "$SHORT_ID"
+        }
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "rules": [
+      $SERVER_BYPASS_RULE
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      }
+    ],
+    "final": "proxy"
+  }
+}
+EOF2
+
+
+
+  cat > "$CLIENT_CLASH_META" <<EOF2
+# Clash Meta / Mihomo 客户端配置
+# 适用于 Clash Verge Rev、Mihomo Party、OpenClash、Nikki 等兼容内核
+# 规则：大陆直连，其他走代理；Reality VLESS 使用 TCP + XTLS Vision
+
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: info
+ipv6: true
+tcp-concurrent: true
+unified-delay: true
+
+geodata-mode: true
+geodata-loader: standard
+geo-auto-update: true
+geo-update-interval: 24
+
+dns:
+  enable: true
+  listen: 127.0.0.1:1053
+  ipv6: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+  nameserver-policy:
+    geosite:cn:
+      - https://dns.alidns.com/dns-query
+      - https://doh.pub/dns-query
+
+proxies:
+  - name: proxy
+    type: vless
+    server: $SERVER_ADDR
+    port: $PORT
+    uuid: $UUID
+    network: tcp
+    udp: true
+    tls: true
+    flow: xtls-rprx-vision
+    servername: $SNI
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: $PUBLIC_KEY
+      short-id: $SHORT_ID
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - proxy
+      - DIRECT
+
+rules:
+  $SERVER_BYPASS_CLASH_RULE
+  - GEOSITE,cn,DIRECT
+  - GEOIP,cn,DIRECT
+  - MATCH,PROXY
+EOF2
 
   cat > "$SYSTEMD_FILE" <<EOF2
 [Unit]
@@ -210,6 +502,14 @@ show_link() {
   echo
   echo "========== 客户端参数 =========="
   cat "$CLIENT_ENV"
+  echo
+  echo "========== sing-box 客户端 JSON 配置 =========="
+  echo "TUN 客户端配置：$CLIENT_JSON_TUN"
+  echo "本地代理配置：$CLIENT_JSON_PROXY"
+  echo "Clash Meta 配置：$CLIENT_CLASH_META"
+  echo
+  echo "========== Clash Meta / Mihomo 客户端配置 =========="
+  echo "$CLIENT_CLASH_META"
   echo
   echo "========== VLESS 分享链接 =========="
   echo "$VLESS_URL"
